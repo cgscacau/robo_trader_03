@@ -4,44 +4,34 @@ import json
 from pathlib import Path
 from datetime import datetime
 import time
-
 import ccxt
 import pandas as pd
 
-
 # =========================
-# CONFIGURAÇÕES BÁSICAS
+# CONFIGURAÇÕES INICIAIS
 # =========================
 USERDIR = Path("user_data")
 CONFIG_PATH = USERDIR / "config.json"
 DATA_DIR = USERDIR / "data" / "gateio"
-EXPORT_PATH = USERDIR / "backtest_trades.json"
+EXPORT_BT = USERDIR / "backtest_trades.json"
+EXPORT_HO = USERDIR / "hyperopt_results.json"
 
 USERDIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-st.set_page_config(page_title="Freqtrade Backtest App", layout="wide")
-st.title("🤖 Freqtrade + GateIO + Streamlit (Backtest em 15m)")
+st.set_page_config(page_title="Freqtrade Trading App", layout="wide")
+st.title("🤖 Freqtrade + GateIO + Streamlit — Backtest & Hyperopt")
 
 
 # =========================
-# FUNÇÃO: BAIXAR DADOS DA GATEIO (CCXT)
+# FUNÇÃO: BAIXAR DADOS GATEIO
 # =========================
-def baixar_gateio(pair: str = "BTC/USDT", timeframe: str = "15m", since: str = "2022-01-01"):
-    """
-    Baixa dados OHLCV da GateIO usando CCXT e salva no formato Feather
-    no caminho esperado pelo Freqtrade.
-    """
-    st.info(f"Baixando dados de {pair} {timeframe} a partir de {since} pela GateIO...")
+def baixar_gateio(pair="BTC/USDT", timeframe="15m", since="2022-01-01"):
+    st.info(f"Baixando dados de {pair} ({timeframe}) desde {since}...")
 
-    exchange = ccxt.gateio({
-        "enableRateLimit": True,
-        "timeout": 20000,
-    })
-
+    exchange = ccxt.gateio({"enableRateLimit": True, "timeout": 20000})
     since_ms = int(pd.Timestamp(since).timestamp() * 1000)
     all_candles = []
-
     progress = st.progress(0)
     steps = 0
 
@@ -49,7 +39,7 @@ def baixar_gateio(pair: str = "BTC/USDT", timeframe: str = "15m", since: str = "
         try:
             candles = exchange.fetch_ohlcv(pair, timeframe=timeframe, since=since_ms, limit=1000)
         except Exception as e:
-            st.warning(f"Erro ao buscar dados, tentando novamente em 2s...\n{e}")
+            st.warning(f"Erro: {e}")
             time.sleep(2)
             continue
 
@@ -58,126 +48,124 @@ def baixar_gateio(pair: str = "BTC/USDT", timeframe: str = "15m", since: str = "
 
         all_candles.extend(candles)
         since_ms = candles[-1][0] + 1
-
         steps += 1
-        progress.progress(min(steps / 50, 1.0))  # barra "fake", só pra feedback visual
-
-        # Pequena pausa para respeitar rate limit
-        time.sleep(exchange.rateLimit / 1000)
+        progress.progress(min(steps / 50, 1.0))
 
         if len(candles) < 1000:
-            # Não tem mais dados suficientes, encerra
             break
 
-    if not all_candles:
-        st.error("Nenhum dado retornado pela GateIO.")
-        return None
+        time.sleep(exchange.rateLimit / 1000)
 
-    df = pd.DataFrame(
-        all_candles,
-        columns=["date", "open", "high", "low", "close", "volume"],
-    )
+    if not all_candles:
+        st.error("Nenhum dado retornado.")
+        return
+
+    df = pd.DataFrame(all_candles, columns=["date", "open", "high", "low", "close", "volume"])
     df["date"] = pd.to_datetime(df["date"], unit="ms")
 
-    filename = f"{pair.replace('/', '_')}-{timeframe}.feather"
-    path = DATA_DIR / filename
+    path = DATA_DIR / f"{pair.replace('/', '_')}-{timeframe}.feather"
     df.to_feather(path)
 
     st.success(f"Dados salvos em: {path}")
-    st.write(f"Total de candles: {len(df)}")
-
-    return df
+    st.write("Amostra:")
+    st.dataframe(df.tail(20))
 
 
 # =========================
-# SIDEBAR – CONTROLES
+# SIDEBAR
 # =========================
 st.sidebar.header("⚙️ Parâmetros")
 
-pair = st.sidebar.text_input("Par (GateIO)", "BTC/USDT")
-timeframe = st.sidebar.selectbox("Timeframe", ["15m", "1h", "4h"], index=0)
-since_date = st.sidebar.text_input("Data inicial p/ download (YYYY-MM-DD)", "2022-01-01")
+pair = st.sidebar.text_input("Par", "BTC/USDT")
+timeframe = st.sidebar.selectbox("Timeframe", ["15m", "1h"], index=0)
+since_date = st.sidebar.text_input("Download desde", "2022-01-01")
 
-bt_start = st.sidebar.text_input("Backtest - Data inicial (YYYYMMDD)", "20251026")
-bt_end = st.sidebar.text_input("Backtest - Data final (YYYYMMDD, opcional)", "20251125")
+strategy_name = st.sidebar.text_input("Estratégia", "AtrStochBreakout15m")
 
-timerange = f"{bt_start}-{bt_end}" if bt_end else f"{bt_start}-"
+bt_start = st.sidebar.text_input("Início do backtest (YYYYMMDD)", "20220101")
+bt_end = st.sidebar.text_input("Fim do backtest (YYYYMMDD)", "20241231")
 
-strategy_name = st.sidebar.text_input("Nome da Estratégia (classe)", "AtrStochBreakout15m")
+timerange = f"{bt_start}-{bt_end}"
 
 st.sidebar.write("---")
-btn_download = st.sidebar.button("📥 Baixar dados GateIO")
+btn_download = st.sidebar.button("📥 Baixar dados")
 btn_backtest = st.sidebar.button("📈 Rodar Backtest")
+btn_hyperopt = st.sidebar.button("🔧 Otimizar (Hyperopt)")
 
 
 # =========================
 # AÇÃO: BAIXAR DADOS
 # =========================
 if btn_download:
-    df = baixar_gateio(pair=pair, timeframe=timeframe, since=since_date)
-    if df is not None:
-        st.subheader("Amostra dos dados baixados")
-        st.dataframe(df.tail(20))
+    baixar_gateio(pair, timeframe, since_date)
 
 
 # =========================
-# AÇÃO: RODAR BACKTEST (FREQTRADE)
+# FUNÇÃO: EXECUTAR BACKTEST
+# =========================
+def rodar_backtest():
+    cmd = [
+        "freqtrade", "backtesting",
+        "--config", str(CONFIG_PATH),
+        "--strategy", strategy_name,
+        "--timerange", timerange,
+        "--userdir", str(USERDIR),
+        "--export", "trades",
+        "--export-filename", str(EXPORT_BT),
+        "--data-format-ohlcv", "feather"
+    ]
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
+# =========================
+# AÇÃO: BACKTEST
 # =========================
 if btn_backtest:
-    st.info("Executando Freqtrade backtesting... aguarde.")
+    st.info("Executando backtest...")
+    result = rodar_backtest()
 
-    # Verifica se o arquivo de dados existe
-    data_file = DATA_DIR / f"{pair.replace('/', '_')}-{timeframe}.feather"
-    if not data_file.exists():
-        st.error(f"Arquivo de dados não encontrado: {data_file}. Baixe os dados primeiro.")
+    st.code(result.stdout + "\n" + result.stderr)
+
+    if result.returncode == 0:
+        st.success("Backtest concluído!")
+
+        if EXPORT_BT.exists():
+            df = pd.read_json(EXPORT_BT)
+            st.dataframe(df)
+
+            if "profit_abs" in df.columns:
+                df["cum_profit"] = df["profit_abs"].cumsum()
+                st.line_chart(df["cum_profit"])
     else:
-        st.write(f"Usando arquivo de dados: `{data_file}`")
-        st.write(f"Timerange: `{timerange}`")
-        st.write(f"Estratégia: `{strategy_name}`")
+        st.error("Erro ao rodar backtest.")
 
-        # Comando de backtest (via subprocess)
-        cmd = [
-            "freqtrade",
-            "backtesting",
-            "--config", str(CONFIG_PATH),
-            "--strategy", strategy_name,
-            "--timerange", timerange,
-            "--userdir", str(USERDIR),
-            "--export", "trades",
-            "--export-filename", str(EXPORT_PATH),
-            "--data-format-ohlcv", "feather",
-        ]
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-        )
+# =========================
+# FUNÇÃO: HYPEROPT
+# =========================
+def rodar_hyperopt():
+    cmd = [
+        "freqtrade", "hyperopt",
+        "--config", str(CONFIG_PATH),
+        "--strategy", strategy_name,
+        "--timerange", timerange,
+        "--spaces", "all",
+        "--epochs", "50",
+        "--userdir", str(USERDIR),
+        "--hyperopt-loss", "SharpeHyperOptLossDaily"
+    ]
+    return subprocess.run(cmd, capture_output=True, text=True)
 
-        st.subheader("Log do Freqtrade")
-        st.code(result.stdout + "\n" + result.stderr)
 
-        if result.returncode != 0:
-            st.error("Erro ao executar o backtest. Veja o log acima.")
-        else:
-            if not EXPORT_PATH.exists():
-                st.warning("Backtest rodou, mas não foi encontrado arquivo de trades exportado.")
-            else:
-                with open(EXPORT_PATH) as f:
-                    trades_data = json.load(f)
+# =========================
+# AÇÃO: HYPEROPT
+# =========================
+if btn_hyperopt:
+    st.info("Rodando HYPEROPT... aguarde (pode demorar).")
+    result = rodar_hyperopt()
+    st.code(result.stdout + "\n" + result.stderr)
 
-                if not trades_data:
-                    st.warning("Backtest concluído, porém nenhum trade foi gerado nesse período.")
-                else:
-                    df_trades = pd.DataFrame(trades_data)
-
-                    st.subheader("📋 Trades gerados")
-                    st.dataframe(df_trades)
-
-                    # Curva de lucro acumulado
-                    if "profit_abs" in df_trades.columns:
-                        df_trades["cum_profit"] = df_trades["profit_abs"].cumsum()
-                        st.subheader("📊 Curva de lucro acumulado (profit_abs)")
-                        st.line_chart(df_trades["cum_profit"])
-                    else:
-                        st.warning("Coluna 'profit_abs' não encontrada no export do Freqtrade.")
+    if result.returncode == 0:
+        st.success("Hyperopt concluído!")
+    else:
+        st.error("Erro no Hyperopt.")
