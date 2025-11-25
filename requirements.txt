@@ -1,9 +1,6 @@
 streamlit
 freqtrade
-cctx
+ccxt
 pandas
 pyarrow
-plotly
-optuna
-scikit-learn
-joblib
+pandas_ta
