@@ -1,6 +1,8 @@
 streamlit
 freqtrade
+cctx
 pandas
+pyarrow
 plotly
 optuna
 scikit-learn
