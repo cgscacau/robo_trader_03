@@ -1,0 +1,7 @@
+streamlit
+freqtrade
+pandas
+plotly
+optuna
+scikit-learn
+joblib
